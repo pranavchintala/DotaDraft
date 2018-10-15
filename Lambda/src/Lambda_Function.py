@@ -24,15 +24,15 @@ def invoke_self_async(event, context):
     small_event_size = 0
     for record in event['Records']:
         record_size = len(bytes(json.dumps(record)))
-        
-	#Lambda Async call payload size limit is 130 KB, we leave 1 KB for additional payload overhead 
-	if record_size> 129000:
+                
+        #Lambda Async call payload size limit is 130 KB; we leave 1 KB for additional payload overhead 
+        if record_size> 129000:
             return
         if small_event_size + record_size < 129000:
             small_event['Records'].append(record)
             small_event_size = small_event_size + record_size
         else:
-            #Tag the event so it is processed by Lambda
+            #Tag the event so it is processed
             small_event['async'] = True
             called_function = context.invoked_function_arn
             boto3.client('lambda').invoke(
@@ -69,7 +69,7 @@ def lambda_handler(event, context):
         expression = {':matchinc': key['Matches_Played'], ':wininc': key['Wins'], ':loseinc': key['Matches_Played']-key['Wins'], ':init': 0, ':gold': key['Gold_Adv'], ':xp': key['XP_Adv'], ':process': key['processed'], ':lambda_timestamp': key['Lambda_Timestamp'], ':kinesis_stamp': key['Kinesis_Timestamp']}
         return expression
     
-    def MakeAssociations(list1, list2, ID):
+    def Make_Associations(list1, list2, ID):
         association=[]
         for dict1 in list1:
             for dict2 in list2:
@@ -77,7 +77,14 @@ def lambda_handler(event, context):
                     association.append({'Hero_ID': dict1['Hero_ID'], ID: dict2['Hero_ID'], 'Match_Start_Time': start_time, 'Wins': dict1['Wins'], 'Gold_Adv': dict1['Gold_Adv'], 'XP_Adv': dict1['XP_Adv'], 'Lambda_Timestamp': lambda_timestamp, 'Kinesis_Timestamp': kinesis_timestamp})
         return association    
     
-    
+    def Update_Aggregations(dictionary, item, ID):
+        if ID in dictionary:
+            for metric in ['Wins','Gold_Adv','XP_Adv']:
+                dictionary[ID][metric] += item[metric]
+            dictionary[ID]['Matches_Played'] += 1
+        else:
+            dictionary[ID] = {'Wins': item['Wins'], 'Gold_Adv': item['Gold_Adv'], 'XP_Adv': item['XP_Adv'], 'Matches_Played': 1, 'Lambda_Timestamp': item['Lambda_Timestamp'], 'Kinesis_Timestamp': item['Kinesis_Timestamp']}
+            
     timestamp = datetime.datetime.utcnow().isoformat()
     decoded_record_data = [base64.b64decode(record['kinesis']['data']) for record in event['Records']]
     deserialized_data = [json.loads(decoded_record) for decoded_record in decoded_record_data]
@@ -129,11 +136,11 @@ def lambda_handler(event, context):
                 dire_item.append({'Hero_ID': hero, 'Match_Start_Time': start_time, 'Wins': dire_w_l, 'Gold_Adv': -radiant_gold_adv, 'XP_Adv': -radiant_xp_adv, 'Lambda_Timestamp': lambda_timestamp, 'Kinesis_Timestamp': kinesis_timestamp})
         
         #List out teammate and counter associations
-        teammates = MakeAssociations(radiant_item,radiant_item,'Teammate_ID')
-        for item in MakeAssociations(dire_item,dire_item,'Teammate_ID'):
+        teammates = Make_Associations(radiant_item,radiant_item,'Teammate_ID')
+        for item in Make_Associations(dire_item,dire_item,'Teammate_ID'):
             teammates.append(item)
-        counters = MakeAssociations(radiant_item,dire_item,'Counter_ID')
-        for item in MakeAssociations(dire_item,radiant_item,'Counter_ID'):
+        counters = Make_Associations(radiant_item,dire_item,'Counter_ID')
+        for item in Make_Associations(dire_item,radiant_item,'Counter_ID'):
             counters.append(item)
         
         #Aggregate records across different entries of the event
@@ -141,33 +148,18 @@ def lambda_handler(event, context):
         for item in full_game:
             item['processed'] = datetime.datetime.utcnow().isoformat()
             hero = item['Hero_ID']
-            if hero in hero_updates:
-                for metric in ['Wins','Gold_Adv','XP_Adv']:
-                    hero_updates[hero][metric] += item[metric]
-                hero_updates[hero]['Matches_Played'] += 1
-            else:
-                hero_updates[hero] = {'Wins': item['Wins'], 'Gold_Adv': item['Gold_Adv'], 'XP_Adv': item['XP_Adv'], 'Matches_Played': 1, 'Lambda_Timestamp': item['Lambda_Timestamp'], 'Kinesis_Timestamp': item['Kinesis_Timestamp']}
-        
+            Update_Aggregations(hero_updates, item, hero)
+            
         for item in teammates:
             item['processed'] = datetime.datetime.utcnow().isoformat()
             team_mate = item['Hero_ID'] + ":" + item['Teammate_ID']
-            if team_mate in teammate_updates:
-                for metric in ['Wins','Gold_Adv','XP_Adv']:
-                    teammate_updates[team_mate][metric] += item[metric]
-                teammate_updates[team_mate]['Matches_Played'] += 1
-            else:
-                teammate_updates[team_mate] = {'Wins': item['Wins'], 'Gold_Adv': item['Gold_Adv'], 'XP_Adv': item['XP_Adv'], 'Matches_Played': 1, 'Lambda_Timestamp': item['Lambda_Timestamp'], 'Kinesis_Timestamp': item['Kinesis_Timestamp']}
-        
+            Update_Aggregations(teammate_updates, item, team_mate)
+            
         for item in counters:
             item['processed'] = datetime.datetime.utcnow().isoformat()
             counter_pair = item['Hero_ID'] + ":" + item['Counter_ID']
-            if counter_pair in counter_updates:
-                for metric in ['Wins','Gold_Adv','XP_Adv']:
-                    counter_updates[counter_pair][metric] += item[metric]
-                counter_updates[counter_pair]['Matches_Played'] += 1
-            else:
-                counter_updates[counter_pair] = {'Wins': item['Wins'], 'Gold_Adv': item['Gold_Adv'], 'XP_Adv': item['XP_Adv'], 'Matches_Played': 1, 'Lambda_Timestamp': item['Lambda_Timestamp'], 'Kinesis_Timestamp': item['Kinesis_Timestamp']}
-    
+            Update_Aggregations(counter_updates, item, counter_pair)
+           
     #Write all of this to DynamoDB once all records in the event are aggregated
     for stat in hero_updates:
         key = hero_updates[stat]
