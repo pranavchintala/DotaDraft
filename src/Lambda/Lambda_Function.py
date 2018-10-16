@@ -9,7 +9,7 @@ import random
 
 #Define DynamoDB Tables
 dynamo_db = boto3.resource('dynamodb')
-table = dynamo_db.Table('Dota_Test_Only_partition')
+table = dynamo_db.Table('Hero_Statistics')
 teammates_table = dynamo_db.Table('Hero_Teammates')
 counters_table = dynamo_db.Table('Hero_Counters')
 
